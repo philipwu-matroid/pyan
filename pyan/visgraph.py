@@ -5,7 +5,7 @@
 import colorsys
 import logging
 import re
-
+from .node import Flavor
 
 class Colorizer:
     """Output graph color manager.
@@ -158,10 +158,13 @@ class VisualGraph(object):
         visited_nodes = []
         for name in visitor.nodes:
             for node in visitor.nodes[name]:
+                logger.debug("checking node in visited node: %s" % node)
                 if node.defined:
                     visited_nodes.append(node)
         visited_nodes.sort(key=lambda x: (x.namespace, x.name))
-
+        for node in visited_nodes:
+            logger.debug("visited_nodes %s" %node)
+        
         def find_filenames():
             filenames = set()
             for node in visited_nodes:
@@ -237,7 +240,7 @@ class VisualGraph(object):
             for n in visitor.defines_edges:
                 if n.defined:
                     for n2 in visitor.defines_edges[n]:
-                        if n2.defined:
+                        if n2.defined and n in nodes_dict and n2 in nodes_dict:
                             root_graph.edges.append(VisualEdge(nodes_dict[n], nodes_dict[n2], "defines", color))
 
         if draw_uses:
@@ -245,7 +248,17 @@ class VisualGraph(object):
             for n in visitor.uses_edges:
                 if n.defined:
                     for n2 in visitor.uses_edges[n]:
-                        if n2.defined:
+                        if n2.defined and n in nodes_dict and n2 in nodes_dict:
                             root_graph.edges.append(VisualEdge(nodes_dict[n], nodes_dict[n2], "uses", color))
 
         return root_graph
+
+    def print_graph(self, logger = None, call_from = ''):
+        logger = logger or logging.getLogger(__name__)
+        for node in self.nodes:
+            logger.debug(call_from + " node: %s" % node)
+        
+        for edge in self.edges:
+            logger.debug(call_from+" edge from  %s to %s" % (edge.source, edge.target))
+            # for to_node in self.edges[from_node]:
+            #     logger.debug(call_from+" edge from  %s to %s" % (from_node, to_node))

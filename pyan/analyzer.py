@@ -5,6 +5,7 @@
 import ast
 import logging
 import symtable
+import os
 from typing import Union
 
 from .anutils import (
@@ -41,6 +42,7 @@ from .node import Flavor, Node
 # https://docs.python.org/3/library/ast.html#abstract-grammar
 #
 
+DEV_HOME = '/home/ubuntu'
 
 class CallGraphVisitor(ast.NodeVisitor):
     """A visitor that can be walked over a Python AST, and will derive
@@ -56,8 +58,17 @@ class CallGraphVisitor(ast.NodeVisitor):
 
         # full module names for all given files
         self.module_to_filename = {}  # inverse mapping for recording which file each AST node came from
+        cwd = os.getcwd()
         for filename in filenames:
-            mod_name = get_module_name(filename)
+            file = filename
+            filename.replace("~", DEV_HOME)
+            self.logger.info(f' filename={filename}' )
+            if filename  != os.path.basename(filename):
+                file = os.path.basename(filename)
+                self.logger.info(f' dirname={os.path.dirname(filename)}' )
+                os.chdir(os.path.dirname(filename))
+            mod_name = get_module_name(os.path.basename(file))
+            os.chdir(cwd)
             self.module_to_filename[mod_name] = filename
         self.filenames = filenames
         self.root = root
@@ -84,19 +95,30 @@ class CallGraphVisitor(ast.NodeVisitor):
         # Analyze.
         self.process()
 
+        self.print_graph("final")
+
     def process(self):
         """Analyze the set of files, twice so that any forward-references are picked up."""
+        cwd = os.getcwd()
         for pas in range(2):
             for filename in self.filenames:
+                file = filename
                 self.logger.info("========== pass %d, file '%s' ==========" % (pas + 1, filename))
-                self.process_one(filename)
+                if filename  != os.path.basename(filename):
+                    file = os.path.basename(filename)
+                    os.chdir(os.path.dirname(filename))
+                self.process_one(file)
+                os.chdir(cwd)
             if pas == 0:
                 self.resolve_base_classes()  # must be done only after all files seen
         self.postprocess()
 
     def process_one(self, filename):
         """Analyze the specified Python source file."""
-        if filename not in self.filenames:
+        filename1 = (os.path.abspath('')+'/'+filename)
+        filename2 = filename1.replace(DEV_HOME, '~')
+        self.logger.info(f' filename={filename}, filename1={filename1}, filename2={filename2}' )
+        if filename not in self.filenames and filename1 not in self.filenames and filename2 not in self.filenames:
             raise ValueError(
                 "Filename '%s' has not been preprocessed (was not given to __init__, which got %s)"
                 % (filename, self.filenames)
@@ -105,6 +127,9 @@ class CallGraphVisitor(ast.NodeVisitor):
             content = f.read()
         self.filename = filename
         self.module_name = get_module_name(filename, root=self.root)
+        self.logger.debug("module_name: %s" % (
+            
+            self.module_name))
         self.analyze_scopes(content, filename)  # add to the currently known scopes
         self.visit(ast.parse(content, filename))
         self.module_name = None
@@ -161,10 +186,24 @@ class CallGraphVisitor(ast.NodeVisitor):
 
         self.expand_unknowns()
         self.resolve_imports()
+        # self.print_graph("Before contract")
         self.contract_nonexistents()
+        self.print_graph("After contract")
         self.cull_inherited()
         self.collapse_inner()
 
+    def print_graph(self, call_from = ''):
+        self.logger.debug("root: %s" % (self.root))
+        for node in self.nodes:
+            self.logger.debug(call_from + " node: %s" % node)
+        
+        for from_node in self.uses_edges:
+            for to_node in self.uses_edges[from_node]:
+                self.logger.debug(call_from+" uses_edge from  %s to %s" % (from_node, to_node))
+
+        for from_node in self.defines_edges:
+            for to_node in self.defines_edges[from_node]:
+                self.logger.debug(call_from+" define_edge from  %s to %s" % (from_node, to_node))
     ###########################################################################
     # visitor methods
 
@@ -547,6 +586,7 @@ class CallGraphVisitor(ast.NodeVisitor):
                 "ImportFrom (original) from %s import %s, %s:%s"
                 % ("." * node.level, [format_alias(x) for x in node.names], self.filename, node.lineno)
             )
+
             tgt_level = node.level
             current_module_namespace = self.module_name.rsplit(".", tgt_level)[0]
             tgt_name = current_module_namespace
@@ -576,6 +616,7 @@ class CallGraphVisitor(ast.NodeVisitor):
                 to_node = self.get_node("", tgt_name + "." + alias.name, node, flavor=Flavor.MODULE)
             else:
                 to_node = self.get_node(tgt_name, alias.name, node, flavor=Flavor.IMPORTEDITEM)
+                to_node.defined = True
             # if there is alias, add extra edge between alias and node
             if alias.asname is not None:
                 alias_name = alias.asname
@@ -701,10 +742,12 @@ class CallGraphVisitor(ast.NodeVisitor):
                 )
                 if self.add_uses_edge(from_node, to_node):
                     self.logger.info(
-                        "New edge added for Use from {from_node} to {to_node} (target obj {obj_node} known but "
+                        f"New edge added for Use from {from_node} to {to_node} (target obj {obj_node} known but "
                         f"target attr {node.attr} not resolved; maybe fwd ref or unanalyzed import)"
                     )
-
+                if obj_node.defined and obj_node.flavor == Flavor.IMPORTEDITEM:
+                    to_node.defined = True
+                    self.add_defines_edge(obj_node, to_node)
                 # remove resolved wildcard from current site to <Node *.attr>
                 self.remove_wild(from_node, obj_node, node.attr)
 
@@ -893,12 +936,22 @@ class CallGraphVisitor(ast.NodeVisitor):
         for kw in node.keywords:
             self.visit(kw.value)
 
+        self.logger.debug("Node in visit_Call %s, %s" % (str(node), str(node.func)) )
         # see if we can predict the result
         try:
             result_node = self.resolve_builtins(node)
         except UnresolvedSuperCallError:
             result_node = None
 
+        self.logger.debug("Node in visit_Call %s", str(result_node))
+        # if result_node is None:
+        #     name = get_ast_node_name(node.func)
+        #     result_node = Node(namespace = None, filename = name, name = name, ast_node=None, flavor=Flavor.FUNCTION)
+        #     # Add to the list of nodes that have this short name.
+        #     if name in self.nodes:
+        #         self.nodes[name].append(result_node)
+        #     else:
+        #         self.nodes[name] = [result_node]
         if isinstance(result_node, Node):  # resolved result
             self.last_value = result_node
 
@@ -934,6 +987,12 @@ class CallGraphVisitor(ast.NodeVisitor):
                     self.logger.info(
                         "New edge added for Use from %s to %s (call creates an instance)" % (from_node, to_node)
                     )
+        for node in self.nodes:
+            self.logger.debug("node: %s" % node)
+        
+        for from_node in self.uses_edges:
+            for to_node in self.uses_edges[from_node]:
+                self.logger.debug("edge from  %s to %s" % (from_node, to_node))
 
     def visit_With(self, node):
         self.logger.debug("With (context manager), %s:%s" % (self.filename, node.lineno))
@@ -1260,7 +1319,7 @@ class CallGraphVisitor(ast.NodeVisitor):
             scopes[ns] = sc
             for t in table.get_children():
                 process(ns, t)
-
+        ## check these objects!
         process(self.module_name, symtable.symtable(code, filename, compile_type="exec"))
 
         # add to existing scopes (while not overwriting any existing definitions with None)
@@ -1664,20 +1723,40 @@ class CallGraphVisitor(ast.NodeVisitor):
 
         new_uses_edges = []
         removed_uses_edges = []
+        import_nodes = []
         for n in self.uses_edges:
             for n2 in self.uses_edges[n]:
                 if n2.namespace is not None and not n2.defined:
+                    if n2.flavor == Flavor.IMPORTEDITEM:
+                        import_nodes.append(n2)
+                        continue
+                    self.logger.debug("namespace %s and n2.defined %s" %(n2.namespace, n2.defined))
                     n3 = self.get_node(None, n2.name, n2.ast_node)
                     n3.defined = False
                     new_uses_edges.append((n, n3))
                     removed_uses_edges.append((n, n2))
                     self.logger.info("Contracting non-existent from %s to %s as %s" % (n, n2, n3))
 
+        for node in import_nodes:
+            node.defined = True
+
         for from_node, to_node in new_uses_edges:
             self.add_uses_edge(from_node, to_node)
 
         for from_node, to_node in removed_uses_edges:
             self.remove_uses_edge(from_node, to_node)
+
+        # # for nodes in self.nodes.values():
+        # #     for node in nodes:
+        # #         if node.flavor in [Flavor.UNKNOWN, Flavor.UNSPECIFIED]:
+        # #             node.defined = False
+
+        # for node in self.nodes:
+        #     self.logger.debug("node: %s" % node)
+        
+        # for from_node in self.uses_edges:
+        #     for to_node in self.uses_edges[from_node]:
+        #         self.logger.debug("edge from  %s to %s" % (from_node, to_node))
 
     def expand_unknowns(self):
         """For each unknown node *.name, replace all its incoming edges with edges to X.name for all possible Xs.

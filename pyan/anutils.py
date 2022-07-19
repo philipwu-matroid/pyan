@@ -27,16 +27,20 @@ def get_module_name(filename, root: str = None):
 
     if os.path.basename(filename) == "__init__.py":
         # init file means module name is directory name
-        module_path = os.path.dirname(filename)
+        # module_path = os.path.dirname(filename)
+        module_path = os.path.abspath('')
     else:
         # otherwise it is the filename without extension
         module_path = filename.replace(".py", "")
+        # module_path = os.path.abspath('')+'/'+filename.replace(".py", "")
 
     # find the module root - walk up the tree and check if it contains .py files - if yes. it is the new root
     directories = [(module_path, True)]
     if root is None:
         while directories[0][0] != os.path.dirname(directories[0][0]):
             potential_root = os.path.dirname(directories[0][0])
+            if potential_root =='':
+                potential_root = os.path.abspath('')
             is_root = any([f == "__init__.py" for f in os.listdir(potential_root)])
             directories.insert(0, (potential_root, is_root))
 

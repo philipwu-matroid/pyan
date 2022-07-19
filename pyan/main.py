@@ -203,7 +203,7 @@ def main(cli_args=None):
         handler = logging.FileHandler(known_args.logname)
         logger.addHandler(handler)
 
-    v = CallGraphVisitor(filenames, logger, root=root)
+    v = CallGraphVisitor(filenames, root=root, logger=logger)
 
     if known_args.function or known_args.namespace:
 
@@ -217,7 +217,11 @@ def main(cli_args=None):
 
         v.filter(node=node, namespace=known_args.namespace)
 
+    # v.print_graph('call from main 220')
+
     graph = VisualGraph.from_visitor(v, options=graph_options, logger=logger)
+
+    # graph.print_graph(logger=logger, call_from="from main visualGraph")
 
     writer = None
 

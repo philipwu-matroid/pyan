@@ -186,4 +186,4 @@ class Node:
         return make_safe_label(self.namespace)
 
     def __repr__(self):
-        return "<Node %s:%s>" % (repr(self.flavor), self.get_name())
+        return "<Node %s:%s, defined %s>" % (repr(self.flavor), self.get_name(), str(self.defined))
